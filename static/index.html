@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>trimrr</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Trimrr Library Pruner</p>
+          <h1>Browse big libraries fast, then prune with confidence.</h1>
+          <p class="hero-copy">One list for Radarr and Sonarr, with instant filtering and bulk delete actions.</p>
+        </div>
+        <div class="hero-stats">
+          <div class="stat-card">
+            <span class="stat-label">Visible</span>
+            <strong id="visibleCount">0</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Visible Size</span>
+            <strong id="visibleSize">0 B</strong>
+          </div>
+        </div>
+      </header>
+
+      <section class="controls-stack">
+        <div class="panel filters-panel">
+          <div class="panel-title">Filters</div>
+          <div class="filters-grid">
+            <label>
+              <span>Storage Root</span>
+              <select id="storageRootFilter">
+                <option value="">All</option>
+              </select>
+            </label>
+            <label>
+              <span>Root Folder</span>
+              <select id="rootFolderFilter">
+                <option value="">All</option>
+              </select>
+            </label>
+            <label>
+              <span>Type</span>
+              <select id="typeFilter">
+                <option value="">All</option>
+                <option value="movie">Movies</option>
+                <option value="series">TV Shows</option>
+              </select>
+            </label>
+            <label>
+              <span>Title Search</span>
+              <input id="titleSearch" type="search" placeholder="Filter titles live">
+            </label>
+            <label>
+              <span>Path Search</span>
+              <input id="pathSearch" type="search" placeholder="Filter paths live">
+            </label>
+            <label class="checkbox-field">
+              <span>Availability</span>
+              <label class="checkbox-inline">
+                <input id="notEmptyFilter" type="checkbox" checked>
+                <span>Not empty</span>
+              </label>
+            </label>
+            <div class="genre-field">
+              <span>Genres</span>
+              <details class="genre-details">
+                <summary>Choose genres</summary>
+                <select id="genreFilter" multiple size="6"></select>
+              </details>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel sort-panel">
+          <div class="panel-title">Sort</div>
+          <div class="sort-row">
+            <label>
+              <span>Sort By</span>
+              <select id="sortField">
+                <option value="diskSize">Disk size</option>
+                <option value="title">Title</option>
+                <option value="path">Path</option>
+                <option value="year">Year</option>
+              </select>
+            </label>
+            <button id="sortDirection" class="secondary-button" type="button" data-direction="desc">Descending</button>
+            <button id="selectVisible" class="secondary-button" type="button">Select visible</button>
+            <button id="clearFilters" class="secondary-button" type="button">Reset filters</button>
+          </div>
+        </div>
+
+      </section>
+
+      <main>
+        <div id="bulkBar" class="panel bulk-bar hidden">
+          <div class="bulk-copy">
+            <strong id="selectedCount">0 selected</strong>
+            <span id="selectedSize">0 B</span>
+          </div>
+          <div class="bulk-actions">
+            <button id="bulkDeleteFiles" class="danger-button" type="button">Delete files only</button>
+            <button id="bulkRemoveDelete" class="danger-button solid" type="button">Remove + delete files</button>
+            <button id="clearSelection" class="secondary-button" type="button">Clear selection</button>
+          </div>
+        </div>
+        <div id="statusMessage" class="status-message">Loading library data...</div>
+        <div id="results" class="results-list"></div>
+      </main>
+    </div>
+
+    <dialog id="confirmDialog">
+      <form method="dialog" class="confirm-card">
+        <h2>Confirm destructive action</h2>
+        <p id="confirmSummary"></p>
+        <div class="dialog-actions">
+          <button value="cancel" class="secondary-button" type="submit">Cancel</button>
+          <button id="confirmActionButton" value="confirm" class="danger-button solid" type="submit">Confirm</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
