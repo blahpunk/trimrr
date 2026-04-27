@@ -154,25 +154,6 @@ label span {
   font-size: 0.9rem;
 }
 
-.checkbox-field input {
-  width: auto;
-}
-
-.checkbox-inline {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  border: 1px solid rgba(65, 47, 38, 0.18);
-  background: var(--panel-strong);
-}
-
-.checkbox-inline span {
-  margin: 0;
-  color: var(--ink);
-}
-
 input,
 select {
   width: 100%;
@@ -266,6 +247,20 @@ select[multiple] {
 .results-list {
   display: grid;
   gap: 16px;
+}
+
+.results-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 18px;
+  padding-bottom: 12px;
+}
+
+.results-footer-copy {
+  color: var(--muted);
+  font-size: 0.92rem;
 }
 
 .result-card {
@@ -462,6 +457,25 @@ dialog::backdrop {
 .confirm-card h2 {
   margin-top: 0;
   font-family: var(--font-display);
+}
+
+.confirm-titles {
+  margin-top: 14px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(34, 28, 23, 0.06);
+}
+
+.confirm-titles strong {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.confirm-titles ul {
+  margin: 0;
+  padding-left: 18px;
 }
 
 .dialog-actions {

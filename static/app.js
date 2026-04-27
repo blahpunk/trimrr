@@ -1,6 +1,7 @@
 const state = {
   items: [],
   filteredItems: [],
+  renderCount: 0,
   selected: new Set(),
   expanded: new Set(),
   castByKey: {},
@@ -13,7 +14,7 @@ const state = {
     title: "",
     path: "",
     genres: [],
-    notEmpty: true,
+    availability: "not_empty",
   },
   sort: {
     field: "diskSize",
@@ -22,6 +23,8 @@ const state = {
 };
 
 const STORAGE_KEY = "trimrr-ui-state";
+const INITIAL_RENDER_COUNT = 80;
+const RENDER_INCREMENT = 80;
 
 const elements = {
   rootFolderFilter: document.getElementById("rootFolderFilter"),
@@ -29,11 +32,14 @@ const elements = {
   typeFilter: document.getElementById("typeFilter"),
   titleSearch: document.getElementById("titleSearch"),
   pathSearch: document.getElementById("pathSearch"),
-  notEmptyFilter: document.getElementById("notEmptyFilter"),
+  availabilityFilter: document.getElementById("availabilityFilter"),
   genreFilter: document.getElementById("genreFilter"),
   sortField: document.getElementById("sortField"),
   sortDirection: document.getElementById("sortDirection"),
   results: document.getElementById("results"),
+  resultsFooter: document.getElementById("resultsFooter"),
+  loadMoreButton: document.getElementById("loadMoreButton"),
+  renderedCount: document.getElementById("renderedCount"),
   bulkBar: document.getElementById("bulkBar"),
   selectedCount: document.getElementById("selectedCount"),
   selectedSize: document.getElementById("selectedSize"),
@@ -44,6 +50,8 @@ const elements = {
   confirmSummary: document.getElementById("confirmSummary"),
   confirmActionButton: document.getElementById("confirmActionButton"),
 };
+
+let loadMoreObserver;
 
 function formatBytes(value) {
   const size = Number(value) || 0;
@@ -106,7 +114,7 @@ function loadUiState() {
         ...state.filters,
         ...saved.filters,
         genres: Array.isArray(saved.filters.genres) ? saved.filters.genres : [],
-        notEmpty: saved.filters.notEmpty !== false,
+        availability: ["not_empty", "empty", "all"].includes(saved.filters.availability) ? saved.filters.availability : "not_empty",
       };
     }
     if (saved.sort?.field) {
@@ -126,7 +134,7 @@ function syncControlsFromState() {
   elements.typeFilter.value = state.filters.type;
   elements.titleSearch.value = state.filters.title;
   elements.pathSearch.value = state.filters.path;
-  elements.notEmptyFilter.checked = state.filters.notEmpty;
+  elements.availabilityFilter.value = state.filters.availability;
   elements.sortField.value = state.sort.field;
   elements.sortDirection.dataset.direction = state.sort.direction;
   elements.sortDirection.textContent = state.sort.direction === "asc" ? "Ascending" : "Descending";
@@ -137,6 +145,10 @@ function syncControlsFromState() {
 
 function getSelectedItems() {
   return state.items.filter((item) => state.selected.has(item.key));
+}
+
+function getRenderedItems() {
+  return state.filteredItems.slice(0, state.renderCount);
 }
 
 function getVisibleItemKeys() {
@@ -228,13 +240,42 @@ function getRatingsMarkup(item) {
   return chips.join("");
 }
 
+function getActionLabel(action) {
+  if (action === "delete_files_only") return "Delete files only";
+  if (action === "remove_and_delete_collection") return "Remove + delete collection";
+  return "Remove + delete files";
+}
+
+function getCollectionItems(item) {
+  if (item.source !== "radarr" || !item.collection?.tmdbId) {
+    return [];
+  }
+  return state.items
+    .filter((entry) => entry.source === "radarr" && entry.collection?.tmdbId === item.collection.tmdbId)
+    .sort((left, right) => String(left.title).localeCompare(String(right.title), undefined, { sensitivity: "base" }));
+}
+
+function getConfirmationMarkup(action, items) {
+  const totalSize = items.reduce((total, item) => total + (Number(item.diskSize) || 0), 0);
+  const actionLabel = getActionLabel(action);
+  const titlesMarkup = action === "remove_and_delete_collection"
+    ? `<div class="confirm-titles"><strong>Titles to delete</strong><ul>${items.map((item) => `<li>${escapeHtml(item.title)}${item.year ? ` (${escapeHtml(item.year)})` : ""}</li>`).join("")}</ul></div>`
+    : "";
+
+  return {
+    actionLabel,
+    markup: `<p>${escapeHtml(actionLabel)} for ${items.length} item(s), totaling ${escapeHtml(formatBytes(totalSize))}.</p>${titlesMarkup}`,
+  };
+}
+
 function itemMatchesFilters(item) {
   if (state.filters.storageRoot && item.storageRoot !== state.filters.storageRoot) return false;
   if (state.filters.rootFolder && item.rootFolder !== state.filters.rootFolder) return false;
   if (state.filters.type && item.type !== state.filters.type) return false;
   if (state.filters.title && !item.title.toLowerCase().includes(state.filters.title)) return false;
   if (state.filters.path && !item.path.toLowerCase().includes(state.filters.path)) return false;
-  if (state.filters.notEmpty && !(Number(item.diskSize) > 0)) return false;
+  if (state.filters.availability === "not_empty" && !(Number(item.diskSize) > 0)) return false;
+  if (state.filters.availability === "empty" && Number(item.diskSize) > 0) return false;
   if (state.filters.genres.length > 0) {
     const itemGenres = new Set((item.genres || []).map((genre) => genre.toLowerCase()));
     const hasAllGenres = state.filters.genres.every((genre) => itemGenres.has(genre));
@@ -247,6 +288,9 @@ function compareValues(left, right, field) {
   if (field === "diskSize" || field === "year") {
     return (Number(left[field]) || 0) - (Number(right[field]) || 0);
   }
+  if (field === "added") {
+    return (Date.parse(left.added || "") || 0) - (Date.parse(right.added || "") || 0);
+  }
   return String(left[field] || "").localeCompare(String(right[field] || ""), undefined, { sensitivity: "base" });
 }
 
@@ -257,6 +301,15 @@ function applyFiltersAndSort() {
       const direction = state.sort.direction === "asc" ? 1 : -1;
       return compareValues(left, right, state.sort.field) * direction;
     });
+  state.renderCount = Math.min(INITIAL_RENDER_COUNT, state.filteredItems.length);
+  render();
+}
+
+function loadMoreItems() {
+  if (state.renderCount >= state.filteredItems.length) {
+    return;
+  }
+  state.renderCount = Math.min(state.renderCount + RENDER_INCREMENT, state.filteredItems.length);
   render();
 }
 
@@ -270,18 +323,21 @@ function updateSelectionUi() {
 
 function render() {
   const visibleSize = state.filteredItems.reduce((total, item) => total + (Number(item.diskSize) || 0), 0);
+  const renderedItems = getRenderedItems();
   elements.visibleCount.textContent = String(state.filteredItems.length);
   elements.visibleSize.textContent = formatBytes(visibleSize);
 
   if (state.filteredItems.length === 0) {
     elements.results.innerHTML = "";
+    elements.resultsFooter.classList.add("hidden");
     setStatus("No items match the current filters.");
     updateSelectionUi();
     return;
   }
 
-  setStatus(`${state.filteredItems.length} items ready.`);
-  elements.results.innerHTML = state.filteredItems.map((item) => {
+  const moreRemaining = state.filteredItems.length - renderedItems.length;
+  setStatus(`Showing ${renderedItems.length} of ${state.filteredItems.length} items${moreRemaining > 0 ? `, ${moreRemaining} more waiting` : ""}.`);
+  elements.results.innerHTML = renderedItems.map((item) => {
     const year = item.year ? ` (${item.year})` : "";
     const poster = item.poster
       ? `<img class="poster" src="${item.poster}" alt="${escapeHtml(item.title)} poster" loading="lazy">`
@@ -289,6 +345,7 @@ function render() {
     const genres = (item.genres || []).map((genre) => `<span class="tag">${escapeHtml(genre)}</span>`).join("");
     const typeLabel = item.type === "movie" ? "Movie" : "TV";
     const isExpanded = state.expanded.has(item.key);
+    const collectionItems = getCollectionItems(item);
     return `
       <article class="result-card ${isExpanded ? "expanded" : ""}" data-key="${item.key}">
         <div class="select-cell">
@@ -314,11 +371,14 @@ function render() {
         <div class="action-cell">
           <button type="button" class="danger-button row-action" data-action="delete_files_only" data-key="${item.key}" ${item.hasFiles ? "" : "disabled"}>Delete files only</button>
           <button type="button" class="danger-button solid row-action" data-action="remove_and_delete" data-key="${item.key}">Remove + delete files</button>
+          ${collectionItems.length > 0 ? `<button type="button" class="danger-button collection-action row-action" data-action="remove_and_delete_collection" data-key="${item.key}">Remove + delete collection</button>` : ""}
         </div>
       </article>
     `;
   }).join("");
 
+  elements.resultsFooter.classList.toggle("hidden", renderedItems.length >= state.filteredItems.length);
+  elements.renderedCount.textContent = `Showing ${renderedItems.length} of ${state.filteredItems.length}`;
   updateSelectionUi();
 }
 
@@ -344,9 +404,8 @@ async function loadItems() {
 async function confirmAndRunAction(action, items) {
   if (!items.length) return;
 
-  const totalSize = items.reduce((total, item) => total + (Number(item.diskSize) || 0), 0);
-  const actionLabel = action === "delete_files_only" ? "Delete files only" : "Remove + delete files";
-  elements.confirmSummary.textContent = `${actionLabel} for ${items.length} item(s), totaling ${formatBytes(totalSize)}.`;
+  const { actionLabel, markup } = getConfirmationMarkup(action, items);
+  elements.confirmSummary.innerHTML = markup;
   elements.confirmActionButton.textContent = actionLabel;
 
   elements.confirmDialog.showModal();
@@ -369,7 +428,7 @@ async function confirmAndRunAction(action, items) {
 
   const targetKeys = new Set(items.map((item) => item.key));
 
-  if (action === "remove_and_delete") {
+  if (action === "remove_and_delete" || action === "remove_and_delete_collection") {
     state.items = state.items.filter((item) => !targetKeys.has(item.key));
     targetKeys.forEach((key) => {
       state.selected.delete(key);
@@ -453,8 +512,8 @@ function bindEvents() {
     saveUiState();
     applyFiltersAndSort();
   });
-  elements.notEmptyFilter.addEventListener("change", (event) => {
-    state.filters.notEmpty = event.target.checked;
+  elements.availabilityFilter.addEventListener("change", (event) => {
+    state.filters.availability = event.target.value;
     saveUiState();
     applyFiltersAndSort();
   });
@@ -477,13 +536,13 @@ function bindEvents() {
   });
 
   document.getElementById("clearFilters").addEventListener("click", () => {
-    state.filters = { storageRoot: "", rootFolder: "", type: "", title: "", path: "", genres: [], notEmpty: true };
+    state.filters = { storageRoot: "", rootFolder: "", type: "", title: "", path: "", genres: [], availability: "not_empty" };
     elements.storageRootFilter.value = "";
     elements.rootFolderFilter.value = "";
     elements.typeFilter.value = "";
     elements.titleSearch.value = "";
     elements.pathSearch.value = "";
-    elements.notEmptyFilter.checked = true;
+    elements.availabilityFilter.value = "not_empty";
     Array.from(elements.genreFilter.options).forEach((option) => { option.selected = false; });
     saveUiState();
     applyFiltersAndSort();
@@ -504,6 +563,9 @@ function bindEvents() {
   });
   document.getElementById("bulkRemoveDelete").addEventListener("click", async () => {
     await confirmAndRunAction("remove_and_delete", getSelectedItems());
+  });
+  elements.loadMoreButton.addEventListener("click", () => {
+    loadMoreItems();
   });
 
   elements.results.addEventListener("click", (event) => {
@@ -528,7 +590,8 @@ function bindEvents() {
     if (button) {
       const item = state.items.find((entry) => entry.key === button.dataset.key);
       if (!item) return;
-      await confirmAndRunAction(button.dataset.action, [item]);
+      const items = button.dataset.action === "remove_and_delete_collection" ? getCollectionItems(item) : [item];
+      await confirmAndRunAction(button.dataset.action, items);
       return;
     }
 
@@ -551,6 +614,14 @@ function bindEvents() {
 async function init() {
   loadUiState();
   bindEvents();
+  loadMoreObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (entry.isIntersecting) {
+        loadMoreItems();
+      }
+    });
+  }, { rootMargin: "300px 0px" });
+  loadMoreObserver.observe(elements.resultsFooter);
   try {
     await loadItems();
   } catch (error) {

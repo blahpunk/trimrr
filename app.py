@@ -191,12 +191,16 @@ def normalize_movie(movie: dict[str, Any]) -> dict[str, Any]:
     movie_file = movie.get("movieFile") or {}
     size_on_disk = movie.get("sizeOnDisk") or movie_file.get("size") or 0
     title_slug = movie.get("titleSlug") or str(movie["id"])
+    collection_data = movie.get("collection") or {}
+    collection_tmdb_id = collection_data.get("tmdbId") or movie.get("collectionTmdbId") or 0
+    collection_title = collection_data.get("title") or movie.get("collectionTitle") or ""
     return {
         "id": movie["id"],
         "key": f"radarr:{movie['id']}",
         "source": "radarr",
         "type": "movie",
         "title": movie.get("title") or "Untitled",
+        "added": movie.get("added") or "",
         "year": movie.get("year"),
         "overview": movie.get("overview") or "",
         "genres": parse_json_field(movie.get("genres"), []),
@@ -206,6 +210,10 @@ def normalize_movie(movie: dict[str, Any]) -> dict[str, Any]:
         "diskSize": size_on_disk,
         "poster": poster_path({"images": parse_json_field(movie.get("images"), [])}, "radarr"),
         "ratings": normalize_ratings(parse_json_field(movie.get("ratings"), {})),
+        "collection": {
+            "tmdbId": collection_tmdb_id,
+            "title": collection_title,
+        } if collection_tmdb_id else None,
         "hasFiles": bool(movie_file.get("id") or size_on_disk),
         "itemPath": f"/movie/{quote(title_slug)}",
         "itemPort": 7878,
@@ -221,6 +229,7 @@ def normalize_series(series: dict[str, Any]) -> dict[str, Any]:
         "source": "sonarr",
         "type": "series",
         "title": series.get("title") or "Untitled",
+        "added": series.get("added") or "",
         "year": series.get("year"),
         "overview": series.get("overview") or "",
         "genres": parse_json_field(series.get("genres"), []),
@@ -246,6 +255,7 @@ def fetch_radarr_items_from_db() -> list[dict[str, Any]]:
               m.Id,
               m.Path,
               m.MovieFileId,
+              m.Added,
               md.Title,
               md.Year,
               md.Overview,
@@ -253,6 +263,8 @@ def fetch_radarr_items_from_db() -> list[dict[str, Any]]:
               md.Images,
               md.Ratings,
               md.TmdbId,
+              md.CollectionTmdbId,
+              md.CollectionTitle,
               COALESCE(mf.Size, 0) AS DiskSize
             FROM Movies m
             JOIN MovieMetadata md ON md.Id = m.MovieMetadataId
@@ -265,12 +277,15 @@ def fetch_radarr_items_from_db() -> list[dict[str, Any]]:
             record = {
                 "id": source["Id"],
                 "path": source["Path"] or "",
+                "added": source["Added"] or "",
                 "title": source["Title"] or "Untitled",
                 "year": source["Year"],
                 "overview": source["Overview"] or "",
                 "genres": source["Genres"],
                 "images": source["Images"],
                 "ratings": source["Ratings"],
+                "collectionTmdbId": source.get("CollectionTmdbId") or 0,
+                "collectionTitle": source.get("CollectionTitle") or "",
                 "rootFolderPath": str(Path(source["Path"]).parent) if source.get("Path") else "",
                 "movieFile": {"id": source.get("MovieFileId")} if source.get("MovieFileId") else {},
                 "sizeOnDisk": source.get("DiskSize") or 0,
@@ -292,6 +307,7 @@ def fetch_sonarr_items_from_db() -> list[dict[str, Any]]:
               s.Id,
               s.Title,
               s.TitleSlug,
+              s.Added,
               s.Year,
               s.Overview,
               s.Genres,
@@ -318,6 +334,7 @@ def fetch_sonarr_items_from_db() -> list[dict[str, Any]]:
             record = {
                 "id": source["Id"],
                 "title": source["Title"] or "Untitled",
+                "added": source["Added"] or "",
                 "titleSlug": str(source.get("TitleSlug") or source["Id"]),
                 "year": source["Year"],
                 "overview": source["Overview"] or "",
@@ -472,17 +489,29 @@ def remove_and_delete(item: dict[str, Any]) -> dict[str, Any]:
             "radarr",
             "DELETE",
             f"/api/v3/movie/{item_id}",
-            query={"deleteFiles": "true", "addImportExclusion": "false"},
+            query={"deleteFiles": "true", "addImportExclusion": "true"},
         )
-        return {"key": item["key"], "status": "deleted", "message": "Movie removed from Radarr and disk"}
+        return {"key": item["key"], "status": "deleted", "message": "Movie removed from Radarr, files deleted, and import exclusion added"}
 
     api_json(
         "sonarr",
         "DELETE",
         f"/api/v3/series/{item_id}",
-        query={"deleteFiles": "true", "addImportExclusion": "false"},
+        query={"deleteFiles": "true", "addImportExclusion": "true"},
     )
-    return {"key": item["key"], "status": "deleted", "message": "Series removed from Sonarr and disk"}
+    return {"key": item["key"], "status": "deleted", "message": "Series removed from Sonarr, files deleted, and import exclusion added"}
+
+
+def remove_and_delete_collection(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    results = []
+    seen: set[str] = set()
+    for item in items:
+        key = item.get("key")
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(remove_and_delete(item))
+    return results
 
 
 class TrimrrHandler(SimpleHTTPRequestHandler):
@@ -561,15 +590,18 @@ class TrimrrHandler(SimpleHTTPRequestHandler):
             body = self.read_json_body()
             action = body.get("action")
             items = body.get("items") or []
-            if action not in {"delete_files_only", "remove_and_delete"}:
+            if action not in {"delete_files_only", "remove_and_delete", "remove_and_delete_collection"}:
                 raise ValueError("Invalid action")
 
-            results = []
-            for item in items:
-                if action == "delete_files_only":
-                    results.append(delete_files_only(item))
-                else:
-                    results.append(remove_and_delete(item))
+            if action == "remove_and_delete_collection":
+                results = remove_and_delete_collection(items)
+            else:
+                results = []
+                for item in items:
+                    if action == "delete_files_only":
+                        results.append(delete_files_only(item))
+                    else:
+                        results.append(remove_and_delete(item))
 
             self.end_json({"ok": True, "results": results})
         except Exception as exc:

@@ -58,12 +58,13 @@
               <span>Path Search</span>
               <input id="pathSearch" type="search" placeholder="Filter paths live">
             </label>
-            <label class="checkbox-field">
+            <label>
               <span>Availability</span>
-              <label class="checkbox-inline">
-                <input id="notEmptyFilter" type="checkbox" checked>
-                <span>Not empty</span>
-              </label>
+              <select id="availabilityFilter">
+                <option value="not_empty" selected>Not empty</option>
+                <option value="empty">Empty</option>
+                <option value="all">All</option>
+              </select>
             </label>
             <div class="genre-field">
               <span>Genres</span>
@@ -82,6 +83,7 @@
               <span>Sort By</span>
               <select id="sortField">
                 <option value="diskSize">Disk size</option>
+                <option value="added">Added</option>
                 <option value="title">Title</option>
                 <option value="path">Path</option>
                 <option value="year">Year</option>
@@ -109,6 +111,10 @@
         </div>
         <div id="statusMessage" class="status-message">Loading library data...</div>
         <div id="results" class="results-list"></div>
+        <div id="resultsFooter" class="results-footer hidden">
+          <button id="loadMoreButton" class="secondary-button" type="button">Load more</button>
+          <span id="renderedCount" class="results-footer-copy"></span>
+        </div>
       </main>
     </div>
 
