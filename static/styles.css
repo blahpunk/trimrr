@@ -196,7 +196,7 @@ select[multiple] {
 }
 
 .hidden {
-  display: none;
+  display: none !important;
 }
 
 .secondary-button,
@@ -300,10 +300,44 @@ select[multiple] {
   flex-wrap: wrap;
 }
 
+.title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .card-topline h3 {
   margin: 0;
   font-size: 1.25rem;
   font-family: var(--font-display);
+}
+
+.title-icon-button {
+  width: 34px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(34, 28, 23, 0.14);
+  border-radius: 999px;
+  background: rgba(34, 28, 23, 0.06);
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
+.title-icon-button span {
+  display: inline-block;
+  transform: translateY(-0.5px);
+}
+
+.title-icon-button:hover,
+.title-icon-button:focus-visible {
+  background: rgba(10, 143, 106, 0.1);
+  border-color: rgba(10, 143, 106, 0.28);
 }
 
 .source-pill,
@@ -314,6 +348,13 @@ select[multiple] {
   border-radius: 999px;
   padding: 6px 10px;
   font-size: 0.8rem;
+}
+
+.link-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .source-pill {
@@ -331,6 +372,11 @@ select[multiple] {
 
 .source-pill.sonarr {
   background: #1c8cb2;
+}
+
+.source-pill.imdb {
+  background: #d4a700;
+  color: #2a2100;
 }
 
 .meta-row,
@@ -390,6 +436,17 @@ select[multiple] {
   gap: 10px;
 }
 
+.search-link {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  text-decoration: none;
+}
+
+.search-link span {
+  line-height: 1;
+}
+
 .cast-panel {
   margin-top: 16px;
   padding-top: 16px;
@@ -411,6 +468,14 @@ select[multiple] {
 .cast-card {
   display: grid;
   gap: 10px;
+  color: inherit;
+  text-decoration: none;
+  transition: transform 120ms ease, opacity 120ms ease;
+}
+
+.cast-card:hover,
+.cast-card:focus-visible {
+  transform: translateY(-1px);
 }
 
 .cast-photo {

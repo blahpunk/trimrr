@@ -15,6 +15,7 @@ const state = {
     path: "",
     genres: [],
     availability: "not_empty",
+    contentRating: "",
   },
   sort: {
     field: "diskSize",
@@ -33,6 +34,7 @@ const elements = {
   titleSearch: document.getElementById("titleSearch"),
   pathSearch: document.getElementById("pathSearch"),
   availabilityFilter: document.getElementById("availabilityFilter"),
+  contentRatingFilter: document.getElementById("contentRatingFilter"),
   genreFilter: document.getElementById("genreFilter"),
   sortField: document.getElementById("sortField"),
   sortDirection: document.getElementById("sortDirection"),
@@ -73,6 +75,22 @@ function formatRatingValue(value) {
   return `${numeric.toFixed(1)}/10`;
 }
 
+function formatRuntime(minutes) {
+  const totalMinutes = Number(minutes) || 0;
+  if (totalMinutes <= 0) {
+    return "";
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const remainder = totalMinutes % 60;
+  if (!hours) {
+    return `${remainder}m`;
+  }
+  if (!remainder) {
+    return `${hours}h`;
+  }
+  return `${hours}h ${remainder}m`;
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -96,6 +114,23 @@ function getItemUrl(item) {
   return `${protocol}//${hostname}:${item.itemPort}${item.itemPath}`;
 }
 
+function getGoogleSearchUrl(item) {
+  const year = item.year ? ` ${item.year}` : "";
+  const query = `${item.title}${year}`;
+  return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+}
+
+function getImdbUrl(item) {
+  if (!item.imdbId) {
+    return "#";
+  }
+  return `https://www.imdb.com/title/${encodeURIComponent(item.imdbId)}/`;
+}
+
+function getActorSearchUrl(actor) {
+  return `https://www.google.com/search?q=${encodeURIComponent(actor.name || "")}`;
+}
+
 function saveUiState() {
   const payload = {
     filters: state.filters,
@@ -115,6 +150,7 @@ function loadUiState() {
         ...saved.filters,
         genres: Array.isArray(saved.filters.genres) ? saved.filters.genres : [],
         availability: ["not_empty", "empty", "all"].includes(saved.filters.availability) ? saved.filters.availability : "not_empty",
+        contentRating: typeof saved.filters.contentRating === "string" ? saved.filters.contentRating : "",
       };
     }
     if (saved.sort?.field) {
@@ -135,6 +171,7 @@ function syncControlsFromState() {
   elements.titleSearch.value = state.filters.title;
   elements.pathSearch.value = state.filters.path;
   elements.availabilityFilter.value = state.filters.availability;
+  elements.contentRatingFilter.value = state.filters.contentRating;
   elements.sortField.value = state.sort.field;
   elements.sortDirection.dataset.direction = state.sort.direction;
   elements.sortDirection.textContent = state.sort.direction === "asc" ? "Ascending" : "Descending";
@@ -145,6 +182,49 @@ function syncControlsFromState() {
 
 function getSelectedItems() {
   return state.items.filter((item) => state.selected.has(item.key));
+}
+
+function captureScrollAnchor(targetItems = []) {
+  const targetKeys = new Set(targetItems.map((item) => item.key));
+  const cards = Array.from(elements.results.querySelectorAll(".result-card"));
+
+  let anchorCard = cards.find((card) => {
+    const rect = card.getBoundingClientRect();
+    return rect.bottom > 0 && !targetKeys.has(card.dataset.key);
+  });
+
+  if (!anchorCard) {
+    anchorCard = cards.find((card) => {
+      const rect = card.getBoundingClientRect();
+      return rect.bottom > 0;
+    });
+  }
+
+  if (!anchorCard) {
+    return null;
+  }
+
+  return {
+    key: anchorCard.dataset.key,
+    top: anchorCard.getBoundingClientRect().top,
+  };
+}
+
+function restoreScrollAnchor(anchor) {
+  if (!anchor) {
+    return;
+  }
+
+  requestAnimationFrame(() => {
+    const card = elements.results.querySelector(`.result-card[data-key="${CSS.escape(anchor.key)}"]`);
+    if (!card) {
+      return;
+    }
+    const delta = card.getBoundingClientRect().top - anchor.top;
+    if (delta !== 0) {
+      window.scrollBy(0, delta);
+    }
+  });
 }
 
 function getRenderedItems() {
@@ -204,7 +284,7 @@ function getCastMarkup(item) {
   }
 
   const castCards = cast.map((actor) => `
-    <article class="cast-card">
+    <a class="cast-card actor-search-link" href="${escapeHtml(getActorSearchUrl(actor))}" target="_blank" rel="noopener noreferrer" aria-label="Search Google for ${escapeHtml(actor.name)}">
       ${actor.image
         ? `<img class="cast-photo" src="${escapeHtml(actor.image)}" alt="${escapeHtml(actor.name)}" loading="lazy" referrerpolicy="no-referrer">`
         : `<div class="cast-photo cast-photo-fallback">No Photo</div>`}
@@ -212,7 +292,7 @@ function getCastMarkup(item) {
         <strong>${escapeHtml(actor.name)}</strong>
         <span>${escapeHtml(actor.character || "Cast")}</span>
       </div>
-    </article>
+    </a>
   `).join("");
 
   return `
@@ -223,11 +303,22 @@ function getCastMarkup(item) {
   `;
 }
 
+function replaceItemsByKey(updatedByKey) {
+  state.items = state.items.map((item) => {
+    const updated = updatedByKey.get(item.key);
+    return updated ? { ...updated, key: item.key } : item;
+  });
+}
+
 function getRatingsMarkup(item) {
   const ratings = item.ratings || {};
   const audience = ratings.audience;
   const critic = ratings.critic;
   const chips = [];
+
+  if (item.certification) {
+    chips.push(`<span class="meta-pill rating-pill"><strong>Rated</strong> ${escapeHtml(item.certification)}</span>`);
+  }
 
   if (audience?.value != null) {
     chips.push(`<span class="meta-pill rating-pill"><strong>Audience</strong> ${escapeHtml(formatRatingValue(audience.value) || "")} <em>${escapeHtml(audience.label || "")}</em></span>`);
@@ -241,6 +332,8 @@ function getRatingsMarkup(item) {
 }
 
 function getActionLabel(action) {
+  if (action === "manual_search") return "Manual search";
+  if (action === "refresh_metadata") return "Refresh metadata";
   if (action === "delete_files_only") return "Delete files only";
   if (action === "remove_and_delete_collection") return "Remove + delete collection";
   return "Remove + delete files";
@@ -276,6 +369,7 @@ function itemMatchesFilters(item) {
   if (state.filters.path && !item.path.toLowerCase().includes(state.filters.path)) return false;
   if (state.filters.availability === "not_empty" && !(Number(item.diskSize) > 0)) return false;
   if (state.filters.availability === "empty" && Number(item.diskSize) > 0) return false;
+  if (state.filters.contentRating && (item.certification || "") !== state.filters.contentRating) return false;
   if (state.filters.genres.length > 0) {
     const itemGenres = new Set((item.genres || []).map((genre) => genre.toLowerCase()));
     const hasAllGenres = state.filters.genres.every((genre) => itemGenres.has(genre));
@@ -285,7 +379,7 @@ function itemMatchesFilters(item) {
 }
 
 function compareValues(left, right, field) {
-  if (field === "diskSize" || field === "year") {
+  if (field === "diskSize" || field === "year" || field === "runtime") {
     return (Number(left[field]) || 0) - (Number(right[field]) || 0);
   }
   if (field === "added") {
@@ -294,14 +388,17 @@ function compareValues(left, right, field) {
   return String(left[field] || "").localeCompare(String(right[field] || ""), undefined, { sensitivity: "base" });
 }
 
-function applyFiltersAndSort() {
+function applyFiltersAndSort(preserveRenderCount = false) {
+  const previousRenderCount = state.renderCount;
   state.filteredItems = state.items
     .filter(itemMatchesFilters)
     .sort((left, right) => {
       const direction = state.sort.direction === "asc" ? 1 : -1;
       return compareValues(left, right, state.sort.field) * direction;
     });
-  state.renderCount = Math.min(INITIAL_RENDER_COUNT, state.filteredItems.length);
+  state.renderCount = preserveRenderCount
+    ? Math.min(Math.max(previousRenderCount, INITIAL_RENDER_COUNT), state.filteredItems.length)
+    : Math.min(INITIAL_RENDER_COUNT, state.filteredItems.length);
   render();
 }
 
@@ -342,7 +439,8 @@ function render() {
     const poster = item.poster
       ? `<img class="poster" src="${item.poster}" alt="${escapeHtml(item.title)} poster" loading="lazy">`
       : `<div class="poster poster-fallback">No Poster</div>`;
-    const genres = (item.genres || []).map((genre) => `<span class="tag">${escapeHtml(genre)}</span>`).join("");
+    const runtimeChip = formatRuntime(item.runtime) ? `<span class="tag runtime-tag">${escapeHtml(formatRuntime(item.runtime))}</span>` : "";
+    const genres = `${runtimeChip}${(item.genres || []).map((genre) => `<span class="tag">${escapeHtml(genre)}</span>`).join("")}`;
     const typeLabel = item.type === "movie" ? "Movie" : "TV";
     const isExpanded = state.expanded.has(item.key);
     const collectionItems = getCollectionItems(item);
@@ -354,8 +452,19 @@ function render() {
         <div class="poster-cell">${poster}</div>
         <div class="content-cell">
           <div class="card-topline">
-            <h3>${escapeHtml(item.title)}${escapeHtml(year)}</h3>
-            <a class="source-pill ${item.source}" href="${escapeHtml(getItemUrl(item))}" target="_blank" rel="noopener noreferrer">${item.source}</a>
+            <div class="title-row">
+              <h3>${escapeHtml(item.title)}${escapeHtml(year)}</h3>
+              <a class="title-icon-button search-link" href="${escapeHtml(getGoogleSearchUrl(item))}" target="_blank" rel="noopener noreferrer" aria-label="Search Google for ${escapeHtml(item.title)}${item.year ? ` (${escapeHtml(item.year)})` : ""}" title="Search Google">
+                <span aria-hidden="true">🔍</span>
+              </a>
+              <button type="button" class="title-icon-button row-action" data-action="refresh_metadata" data-key="${item.key}" aria-label="Refresh metadata" title="Refresh metadata">
+                <span aria-hidden="true">⟲</span>
+              </button>
+            </div>
+            <div class="link-pills">
+              <a class="source-pill ${item.source}" href="${escapeHtml(getItemUrl(item))}" target="_blank" rel="noopener noreferrer">${item.source}</a>
+              ${item.imdbId ? `<a class="source-pill imdb" href="${escapeHtml(getImdbUrl(item))}" target="_blank" rel="noopener noreferrer">imdb</a>` : ""}
+            </div>
           </div>
           <div class="meta-row">
             <span class="meta-pill">${typeLabel}</span>
@@ -369,6 +478,7 @@ function render() {
           ${getCastMarkup(item)}
         </div>
         <div class="action-cell">
+          <button type="button" class="secondary-button row-action" data-action="manual_search" data-key="${item.key}">Manual search</button>
           <button type="button" class="danger-button row-action" data-action="delete_files_only" data-key="${item.key}" ${item.hasFiles ? "" : "disabled"}>Delete files only</button>
           <button type="button" class="danger-button solid row-action" data-action="remove_and_delete" data-key="${item.key}">Remove + delete files</button>
           ${collectionItems.length > 0 ? `<button type="button" class="danger-button collection-action row-action" data-action="remove_and_delete_collection" data-key="${item.key}">Remove + delete collection</button>` : ""}
@@ -383,8 +493,14 @@ function render() {
 }
 
 function populateFilters(rootFolders, storageRoots, genres) {
+  const contentRatings = Array.from(new Set(
+    state.items
+      .map((item) => (item.certification || "").trim())
+      .filter(Boolean),
+  )).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
   elements.storageRootFilter.innerHTML = `<option value="">All</option>${storageRoots.map((root) => `<option value="${escapeHtml(root)}">${escapeHtml(root)}</option>`).join("")}`;
   elements.rootFolderFilter.innerHTML = `<option value="">All</option>${rootFolders.map((folder) => `<option value="${escapeHtml(folder)}">${escapeHtml(folder)}</option>`).join("")}`;
+  elements.contentRatingFilter.innerHTML = `<option value="">All</option>${contentRatings.map((rating) => `<option value="${escapeHtml(rating)}">${escapeHtml(rating)}</option>`).join("")}`;
   elements.genreFilter.innerHTML = genres.map((genre) => `<option value="${escapeHtml(genre)}">${escapeHtml(genre)}</option>`).join("");
   syncControlsFromState();
 }
@@ -415,6 +531,7 @@ async function confirmAndRunAction(action, items) {
 
   if (choice !== "confirm") return;
 
+  const scrollAnchor = captureScrollAnchor(items);
   setStatus(`Running ${actionLabel.toLowerCase()}...`);
   const response = await fetch("/api/delete", {
     method: "POST",
@@ -445,7 +562,46 @@ async function confirmAndRunAction(action, items) {
   }
 
   setStatus(`Completed ${actionLabel.toLowerCase()} for ${items.length} item(s).`);
-  applyFiltersAndSort();
+  applyFiltersAndSort(true);
+  restoreScrollAnchor(scrollAnchor);
+}
+
+async function runAction(action, items) {
+  if (!items.length) return;
+
+  setStatus(`Running ${getActionLabel(action).toLowerCase()}...`);
+  const response = await fetch("/api/action", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, items }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || `Action failed with ${response.status}`);
+  }
+
+  if (action === "refresh_metadata") {
+    const updatedByKey = new Map((payload.results || []).filter((result) => result.item).map((result) => [result.key, result.item]));
+    const expandedKeysToReload = (payload.results || [])
+      .map((result) => result.key)
+      .filter((key) => state.expanded.has(key));
+    expandedKeysToReload.forEach((key) => {
+      delete state.castByKey[key];
+      state.loadingCast.delete(key);
+    });
+    replaceItemsByKey(updatedByKey);
+    applyFiltersAndSort(true);
+    expandedKeysToReload.forEach((key) => {
+      const updatedItem = state.items.find((item) => item.key === key);
+      if (updatedItem) {
+        loadCast(updatedItem);
+      }
+    });
+    setStatus("Metadata refreshed.");
+    return;
+  }
+
+  setStatus(`${getActionLabel(action)} queued for ${items.length} item(s).`);
 }
 
 async function loadCast(item) {
@@ -517,6 +673,11 @@ function bindEvents() {
     saveUiState();
     applyFiltersAndSort();
   });
+  elements.contentRatingFilter.addEventListener("change", (event) => {
+    state.filters.contentRating = event.target.value;
+    saveUiState();
+    applyFiltersAndSort();
+  });
   elements.genreFilter.addEventListener("change", () => {
     state.filters.genres = getSelectedGenreValues().map((value) => value.toLowerCase());
     saveUiState();
@@ -536,13 +697,14 @@ function bindEvents() {
   });
 
   document.getElementById("clearFilters").addEventListener("click", () => {
-    state.filters = { storageRoot: "", rootFolder: "", type: "", title: "", path: "", genres: [], availability: "not_empty" };
+    state.filters = { storageRoot: "", rootFolder: "", type: "", title: "", path: "", genres: [], availability: "not_empty", contentRating: "" };
     elements.storageRootFilter.value = "";
     elements.rootFolderFilter.value = "";
     elements.typeFilter.value = "";
     elements.titleSearch.value = "";
     elements.pathSearch.value = "";
     elements.availabilityFilter.value = "not_empty";
+    elements.contentRatingFilter.value = "";
     Array.from(elements.genreFilter.options).forEach((option) => { option.selected = false; });
     saveUiState();
     applyFiltersAndSort();
@@ -590,6 +752,14 @@ function bindEvents() {
     if (button) {
       const item = state.items.find((entry) => entry.key === button.dataset.key);
       if (!item) return;
+      if (button.dataset.action === "refresh_metadata") {
+        await runAction("refresh_metadata", [item]);
+        return;
+      }
+      if (button.dataset.action === "manual_search") {
+        await runAction("manual_search", [item]);
+        return;
+      }
       const items = button.dataset.action === "remove_and_delete_collection" ? getCollectionItems(item) : [item];
       await confirmAndRunAction(button.dataset.action, items);
       return;
@@ -600,6 +770,14 @@ function bindEvents() {
     }
 
     if (event.target.closest(".source-pill")) {
+      return;
+    }
+
+    if (event.target.closest(".search-link")) {
+      return;
+    }
+
+    if (event.target.closest(".actor-search-link")) {
       return;
     }
 

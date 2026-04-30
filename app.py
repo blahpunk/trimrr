@@ -6,6 +6,7 @@ import os
 import posixpath
 import sqlite3
 import sys
+import time
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -191,6 +192,8 @@ def normalize_movie(movie: dict[str, Any]) -> dict[str, Any]:
     movie_file = movie.get("movieFile") or {}
     size_on_disk = movie.get("sizeOnDisk") or movie_file.get("size") or 0
     title_slug = movie.get("titleSlug") or str(movie["id"])
+    tmdb_id = movie.get("tmdbId") or 0
+    imdb_id = movie.get("imdbId") or ""
     collection_data = movie.get("collection") or {}
     collection_tmdb_id = collection_data.get("tmdbId") or movie.get("collectionTmdbId") or 0
     collection_title = collection_data.get("title") or movie.get("collectionTitle") or ""
@@ -200,8 +203,12 @@ def normalize_movie(movie: dict[str, Any]) -> dict[str, Any]:
         "source": "radarr",
         "type": "movie",
         "title": movie.get("title") or "Untitled",
+        "tmdbId": tmdb_id,
+        "imdbId": imdb_id,
         "added": movie.get("added") or "",
         "year": movie.get("year"),
+        "certification": movie.get("certification") or "",
+        "runtime": movie.get("runtime") or 0,
         "overview": movie.get("overview") or "",
         "genres": parse_json_field(movie.get("genres"), []),
         "path": movie.get("path") or "",
@@ -229,8 +236,12 @@ def normalize_series(series: dict[str, Any]) -> dict[str, Any]:
         "source": "sonarr",
         "type": "series",
         "title": series.get("title") or "Untitled",
+        "tvdbId": series.get("tvdbId") or 0,
+        "imdbId": series.get("imdbId") or "",
         "added": series.get("added") or "",
         "year": series.get("year"),
+        "certification": series.get("certification") or "",
+        "runtime": series.get("runtime") or 0,
         "overview": series.get("overview") or "",
         "genres": parse_json_field(series.get("genres"), []),
         "path": series.get("path") or "",
@@ -258,11 +269,14 @@ def fetch_radarr_items_from_db() -> list[dict[str, Any]]:
               m.Added,
               md.Title,
               md.Year,
+              md.Certification,
+              md.Runtime,
               md.Overview,
               md.Genres,
               md.Images,
               md.Ratings,
               md.TmdbId,
+              md.ImdbId,
               md.CollectionTmdbId,
               md.CollectionTitle,
               COALESCE(mf.Size, 0) AS DiskSize
@@ -280,10 +294,14 @@ def fetch_radarr_items_from_db() -> list[dict[str, Any]]:
                 "added": source["Added"] or "",
                 "title": source["Title"] or "Untitled",
                 "year": source["Year"],
+                "certification": source.get("Certification") or "",
+                "runtime": source.get("Runtime") or 0,
                 "overview": source["Overview"] or "",
                 "genres": source["Genres"],
                 "images": source["Images"],
                 "ratings": source["Ratings"],
+                "tmdbId": source.get("TmdbId") or 0,
+                "imdbId": source.get("ImdbId") or "",
                 "collectionTmdbId": source.get("CollectionTmdbId") or 0,
                 "collectionTitle": source.get("CollectionTitle") or "",
                 "rootFolderPath": str(Path(source["Path"]).parent) if source.get("Path") else "",
@@ -293,6 +311,66 @@ def fetch_radarr_items_from_db() -> list[dict[str, Any]]:
             }
             items.append(normalize_movie(record))
         return items
+    finally:
+        connection.close()
+
+
+def fetch_radarr_item_from_db(item_id: int) -> dict[str, Any] | None:
+    connection = sqlite3.connect(DATABASES["radarr"])
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute(
+            """
+            SELECT
+              m.Id,
+              m.Path,
+              m.MovieFileId,
+              m.Added,
+              md.Title,
+              md.Year,
+              md.Certification,
+              md.Runtime,
+              md.Overview,
+              md.Genres,
+              md.Images,
+              md.Ratings,
+              md.TmdbId,
+              md.ImdbId,
+              md.CollectionTmdbId,
+              md.CollectionTitle,
+              COALESCE(mf.Size, 0) AS DiskSize
+            FROM Movies m
+            JOIN MovieMetadata md ON md.Id = m.MovieMetadataId
+            LEFT JOIN MovieFiles mf ON mf.Id = m.MovieFileId
+            WHERE m.Id = ?
+            """,
+            (item_id,),
+        ).fetchone()
+        if not row:
+            return None
+        source = dict(row)
+        record = {
+            "id": source["Id"],
+            "path": source["Path"] or "",
+            "added": source["Added"] or "",
+            "title": source["Title"] or "Untitled",
+            "year": source["Year"],
+            "certification": source.get("Certification") or "",
+            "runtime": source.get("Runtime") or 0,
+            "overview": source["Overview"] or "",
+            "genres": source["Genres"],
+            "images": source["Images"],
+            "ratings": source["Ratings"],
+            "tmdbId": source.get("TmdbId") or 0,
+            "imdbId": source.get("ImdbId") or "",
+            "collectionTmdbId": source.get("CollectionTmdbId") or 0,
+            "collectionTitle": source.get("CollectionTitle") or "",
+            "rootFolderPath": str(Path(source["Path"]).parent) if source.get("Path") else "",
+            "movieFile": {"id": source.get("MovieFileId")} if source.get("MovieFileId") else {},
+            "sizeOnDisk": source.get("DiskSize") or 0,
+            "titleSlug": str(source.get("TmdbId") or source["Id"]),
+        }
+        return normalize_movie(record)
     finally:
         connection.close()
 
@@ -307,8 +385,12 @@ def fetch_sonarr_items_from_db() -> list[dict[str, Any]]:
               s.Id,
               s.Title,
               s.TitleSlug,
+              s.TvdbId,
+              s.ImdbId,
               s.Added,
               s.Year,
+              s.Certification,
+              s.Runtime,
               s.Overview,
               s.Genres,
               s.Images,
@@ -334,9 +416,13 @@ def fetch_sonarr_items_from_db() -> list[dict[str, Any]]:
             record = {
                 "id": source["Id"],
                 "title": source["Title"] or "Untitled",
+                "tvdbId": source.get("TvdbId") or 0,
+                "imdbId": source.get("ImdbId") or "",
                 "added": source["Added"] or "",
                 "titleSlug": str(source.get("TitleSlug") or source["Id"]),
                 "year": source["Year"],
+                "certification": source.get("Certification") or "",
+                "runtime": source.get("Runtime") or 0,
                 "overview": source["Overview"] or "",
                 "genres": source["Genres"],
                 "images": source["Images"],
@@ -354,6 +440,95 @@ def fetch_sonarr_items_from_db() -> list[dict[str, Any]]:
         connection.close()
 
 
+def fetch_sonarr_item_from_db(item_id: int) -> dict[str, Any] | None:
+    connection = sqlite3.connect(DATABASES["sonarr"])
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute(
+            """
+            SELECT
+              s.Id,
+              s.Title,
+              s.TitleSlug,
+              s.TvdbId,
+              s.ImdbId,
+              s.Added,
+              s.Year,
+              s.Certification,
+              s.Runtime,
+              s.Overview,
+              s.Genres,
+              s.Images,
+              s.Ratings,
+              s.Path,
+              (
+                SELECT COALESCE(SUM(ef.Size), 0)
+                FROM Episodes e
+                JOIN EpisodeFiles ef ON ef.Id = e.EpisodeFileId
+                WHERE e.SeriesId = s.Id AND e.EpisodeFileId > 0
+              ) AS DiskSize,
+              (
+                SELECT COUNT(*)
+                FROM Episodes e
+                WHERE e.SeriesId = s.Id AND e.EpisodeFileId > 0
+              ) AS EpisodeFileCount
+            FROM Series s
+            WHERE s.Id = ?
+            """,
+            (item_id,),
+        ).fetchone()
+        if not row:
+            return None
+        source = dict(row)
+        record = {
+            "id": source["Id"],
+            "title": source["Title"] or "Untitled",
+            "tvdbId": source.get("TvdbId") or 0,
+            "imdbId": source.get("ImdbId") or "",
+            "added": source["Added"] or "",
+            "titleSlug": str(source.get("TitleSlug") or source["Id"]),
+            "year": source["Year"],
+            "certification": source.get("Certification") or "",
+            "runtime": source.get("Runtime") or 0,
+            "overview": source["Overview"] or "",
+            "genres": source["Genres"],
+            "images": source["Images"],
+            "ratings": source["Ratings"],
+            "path": source["Path"] or "",
+            "rootFolderPath": str(Path(source["Path"]).parent) if source.get("Path") else "",
+            "statistics": {
+                "sizeOnDisk": source.get("DiskSize") or 0,
+                "episodeFileCount": source.get("EpisodeFileCount") or 0,
+            },
+        }
+        return normalize_series(record)
+    finally:
+        connection.close()
+
+
+def fetch_item(source: str, item_id: int) -> dict[str, Any] | None:
+    if source == "radarr":
+        return fetch_radarr_item_from_db(item_id)
+    if source == "sonarr":
+        return fetch_sonarr_item_from_db(item_id)
+    raise ValueError("Unsupported source")
+
+
+def wait_for_command(source: str, command_id: int, timeout_seconds: float = 8.0) -> dict[str, Any] | None:
+    deadline = time.time() + timeout_seconds
+    last_response = None
+    while time.time() < deadline:
+        try:
+            response = api_json(source, "GET", f"/api/v3/command/{command_id}")
+            last_response = response
+            if response.get("status") in {"completed", "failed", "aborted"}:
+                return response
+        except Exception:
+            break
+        time.sleep(0.4)
+    return last_response
+
+
 def fetch_root_folders() -> list[str]:
     folders: set[str] = set()
     for source in SERVICES:
@@ -366,6 +541,33 @@ def fetch_root_folders() -> list[str]:
             if path:
                 folders.add(path)
     return sorted(folders, key=str.casefold)
+
+
+def fetch_excluded_ids() -> tuple[set[int], set[int]]:
+    radarr_tmdb_ids: set[int] = set()
+    sonarr_tvdb_ids: set[int] = set()
+
+    try:
+        exclusions = api_json("radarr", "GET", "/api/v3/exclusions")
+        radarr_tmdb_ids = {
+            int(entry.get("tmdbId") or 0)
+            for entry in exclusions
+            if int(entry.get("tmdbId") or 0) > 0
+        }
+    except Exception as exc:
+        print(f"Failed to load Radarr exclusions: {exc}", file=sys.stderr)
+
+    try:
+        exclusions = api_json("sonarr", "GET", "/api/v3/importlistexclusion")
+        sonarr_tvdb_ids = {
+            int(entry.get("tvdbId") or 0)
+            for entry in exclusions
+            if int(entry.get("tvdbId") or 0) > 0
+        }
+    except Exception as exc:
+        print(f"Failed to load Sonarr exclusions: {exc}", file=sys.stderr)
+
+    return radarr_tmdb_ids, sonarr_tvdb_ids
 
 
 def fetch_items() -> dict[str, Any]:
@@ -390,6 +592,15 @@ def fetch_items() -> dict[str, Any]:
             items.extend(normalize_series(series) for series in series_list)
         except Exception as api_exc:
             print(f"Failed to load Sonarr items from API: {api_exc}", file=sys.stderr)
+
+    radarr_excluded_tmdb_ids, sonarr_excluded_tvdb_ids = fetch_excluded_ids()
+    items = [
+        item for item in items
+        if not (
+            (item.get("source") == "radarr" and int(item.get("tmdbId") or 0) in radarr_excluded_tmdb_ids)
+            or (item.get("source") == "sonarr" and int(item.get("tvdbId") or 0) in sonarr_excluded_tvdb_ids)
+        )
+    ]
 
     genres = sorted({genre for item in items for genre in item["genres"]}, key=str.casefold)
     storage_roots = sorted({item["storageRoot"] for item in items if item.get("storageRoot")}, key=str.casefold)
@@ -481,6 +692,45 @@ def delete_files_only(item: dict[str, Any]) -> dict[str, Any]:
     return {"key": item["key"], "status": "deleted", "message": f"Deleted {len(episode_files)} episode files"}
 
 
+def add_import_list_exclusion(item: dict[str, Any]) -> None:
+    source = item["source"]
+    if source == "radarr":
+        tmdb_id = int(item.get("tmdbId") or 0)
+        if not tmdb_id:
+            raise RuntimeError(f"Cannot exclude Radarr item without tmdbId: {item.get('key')}")
+        body: dict[str, Any] = {
+            "tmdbId": tmdb_id,
+            "movieTitle": item.get("title") or "Untitled",
+        }
+        if item.get("year"):
+            body["movieYear"] = int(item["year"])
+        path = "/api/v3/exclusions"
+    else:
+        tvdb_id = int(item.get("tvdbId") or 0)
+        if not tvdb_id:
+            raise RuntimeError(f"Cannot exclude Sonarr item without tvdbId: {item.get('key')}")
+        body = {
+            "tvdbId": tvdb_id,
+            "title": item.get("title") or "Untitled",
+        }
+        path = "/api/v3/importlistexclusion"
+
+    status, payload, _headers = api_request(source, "POST", path, body=body)
+    if status in {200, 201}:
+        return
+
+    detail = payload.decode("utf-8", errors="replace")
+    if status in {400, 409, 500} and (
+        "ImportListExclusionExistsValidator" in detail
+        or "already been added" in detail
+        or "UNIQUE constraint failed" in detail
+        or "constraint failed" in detail
+    ):
+        return
+
+    raise RuntimeError(f"{source} exclusion add failed with {status}: {detail}")
+
+
 def remove_and_delete(item: dict[str, Any]) -> dict[str, Any]:
     source = item["source"]
     item_id = int(item["id"])
@@ -489,17 +739,19 @@ def remove_and_delete(item: dict[str, Any]) -> dict[str, Any]:
             "radarr",
             "DELETE",
             f"/api/v3/movie/{item_id}",
-            query={"deleteFiles": "true", "addImportExclusion": "true"},
+            query={"deleteFiles": "true"},
         )
-        return {"key": item["key"], "status": "deleted", "message": "Movie removed from Radarr, files deleted, and import exclusion added"}
+        add_import_list_exclusion(item)
+        return {"key": item["key"], "status": "deleted", "message": "Movie removed from Radarr, files deleted, and exclusion added"}
 
     api_json(
         "sonarr",
         "DELETE",
         f"/api/v3/series/{item_id}",
-        query={"deleteFiles": "true", "addImportExclusion": "true"},
+        query={"deleteFiles": "true"},
     )
-    return {"key": item["key"], "status": "deleted", "message": "Series removed from Sonarr, files deleted, and import exclusion added"}
+    add_import_list_exclusion(item)
+    return {"key": item["key"], "status": "deleted", "message": "Series removed from Sonarr, files deleted, and exclusion added"}
 
 
 def remove_and_delete_collection(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -512,6 +764,71 @@ def remove_and_delete_collection(items: list[dict[str, Any]]) -> list[dict[str, 
         seen.add(key)
         results.append(remove_and_delete(item))
     return results
+
+
+def trigger_manual_search(item: dict[str, Any]) -> dict[str, Any]:
+    source = item["source"]
+    item_id = int(item["id"])
+
+    if source == "radarr":
+        response = api_json(
+            "radarr",
+            "POST",
+            "/api/v3/command",
+            body={"name": "MoviesSearch", "movieIds": [item_id]},
+        )
+        return {
+            "key": item["key"],
+            "status": response.get("status", "queued"),
+            "message": "Manual movie search queued",
+            "commandId": response.get("id"),
+        }
+
+    response = api_json(
+        "sonarr",
+        "POST",
+        "/api/v3/command",
+        body={"name": "SeriesSearch", "seriesId": item_id},
+    )
+    return {
+        "key": item["key"],
+        "status": response.get("status", "queued"),
+        "message": "Manual series search queued",
+        "commandId": response.get("id"),
+    }
+
+
+def refresh_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    source = item["source"]
+    item_id = int(item["id"])
+
+    if source == "radarr":
+        response = api_json(
+            "radarr",
+            "POST",
+            "/api/v3/command",
+            body={"name": "RefreshMovie", "movieIds": [item_id]},
+        )
+    else:
+        response = api_json(
+            "sonarr",
+            "POST",
+            "/api/v3/command",
+            body={"name": "RefreshSeries", "seriesIds": [item_id]},
+        )
+
+    command_id = response.get("id")
+    if command_id:
+        wait_for_command(source, int(command_id))
+
+    updated_item = fetch_item(source, item_id)
+    return {
+        "key": item["key"],
+        "status": response.get("status", "queued"),
+        "message": "Metadata refresh queued",
+        "commandId": command_id,
+        "item": updated_item,
+    }
 
 
 class TrimrrHandler(SimpleHTTPRequestHandler):
@@ -582,6 +899,25 @@ class TrimrrHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/action":
+            try:
+                body = self.read_json_body()
+                action = body.get("action")
+                items = body.get("items") or []
+                if action not in {"manual_search", "refresh_metadata"}:
+                    raise ValueError("Invalid action")
+                if not items:
+                    raise ValueError("No items provided")
+
+                if action == "manual_search":
+                    results = [trigger_manual_search(item) for item in items]
+                else:
+                    results = [refresh_metadata(item) for item in items]
+                self.end_json({"ok": True, "results": results})
+            except Exception as exc:
+                self.end_json({"error": str(exc)}, status=500)
+            return
+
         if parsed.path != "/api/delete":
             self.end_json({"error": "Not found"}, status=404)
             return
